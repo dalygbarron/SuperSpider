@@ -1,10 +1,13 @@
 # Super Spider
-Ok got a little problem with the whole event listener thingy. How do you stop
-there from being a million of the same event in a row, when you could just
-trigger the event once at the end of that process?
-
-Maybe when you call trigger instead of triggering right away it buffers it and
-waits for some kind of idle indication, thus if you try to put two of the same
-thing in the buffer it skips.
-
-Yeah that is bigly smart.
+Ok next thing to work on is making it that you can select an individual colour
+in the palette and use it to draw onto the tile. Then make it you can select
+which tile to draw on.
+When I have done those two things it would be good to make it that you can
+select not just one tile but groups of them for editing, and maybe make it
+display a grid on the editing screen so you can see where each one ends and
+starts.
+Once that works make it you can change the colours in the palette.
+When that is done maybe start looking at importing/exporting actual snes binary
+files.
+After that maybe start working on stuff like different drawing tools. Line and
+fill etc.
