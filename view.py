@@ -18,24 +18,34 @@ class TileImageCache(qc.QObject):
         super().__init__()
         self.palette = palette
         self.tileData = tileData
-        self.images = [[None] * tileData.getRows()] * TileData.ROW_WIDTH
-        palette.change.connect(self._updateAllTiles)
+        self.images = []
+        palette.changeSelection.connect(self._updateIfPaletteChanged)
+        palette.changeData.connect(self._updateAllTiles)
+        tileData.changeData.connect(self._updateTile)
         for x in range(TileData.ROW_WIDTH):
+            row = []
             for y in range(tileData.getRows()):
-                self.images[x][y] = qg.QImage(
+                row.append(qg.QImage(
                     TileData.TILE_SIZE,
                     TileData.TILE_SIZE,
                     qg.QImage.Format.Format_RGB555
-                )
-                self._updateTile(x, y)
+                ))
+            self.images.append(row)
+        self._updateAllTiles()
+    
+    def _updateIfPaletteChanged(self, row: int, col: int) -> None:
+        """Updates all tiles but only if the passed row is different to the
+        palette's current row"""
+        if row != self.palette.getSelection()[0]: self._updateAllTiles()
     
     def _updateAllTiles(self) -> None:
         """Updates all the tiles when necessary"""
         for x in range(TileData.ROW_WIDTH):
             for y in range(self.tileData.getRows()):
-                self._updateTile(x, y)
+                self._updateTile(x, y, False)
+        self.change.emit()
     
-    def _updateTile(self, x: int, y: int) -> None:
+    def _updateTile(self, x: int, y: int, allowSignal = True) -> None:
         """Recreates the data in a given tile's image based on the latest
         info"""
         image = self.images[x][y]
@@ -50,7 +60,7 @@ class TileImageCache(qc.QObject):
                 colour = self.palette.getActiveColour(index)
                 loc = iy * TileData.TILE_SIZE * 2 + ix * 2
                 data[loc:loc + 2] = colour
-        self.change.emit()
+        if allowSignal: self.change.emit()
     
     def getImage(self, x: int, y: int) -> qg.QImage:
         """Gets the corresponding image for this location"""
@@ -64,12 +74,14 @@ class PaletteRenderer(qw.QWidget):
         super().__init__()
         self.palette = palette
         self.mouseReleaseEvent = self._clicked
-        palette.change.connect(self.update)
+        palette.changeSelection.connect(self.update)
+        palette.changeData.connect(self.update)
 
     def _clicked(self, event: qg.QMouseEvent) -> None:
         if event.button() == qt.MouseButton.LeftButton:
             row = math.floor(event.position().y() / 16)
-            self.palette.setActive(row)
+            col = math.floor(event.position().x() / 16)
+            self.palette.select(row, col)
     
     def paintEvent(self, event: qg.QPaintEvent) -> None:
         painter = qg.QPainter()
@@ -82,9 +94,11 @@ class PaletteRenderer(qw.QWidget):
                 brush.setColor(qg.QColor(*expandColour(colour)))
                 painter.setBrush(brush)
                 painter.fillRect(x * 16, y * 16, 16, 16, painter.brush())
+        selection = self.palette.getSelection()
         brush.setStyle(qt.BrushStyle.NoBrush)
         painter.setBrush(brush)
-        painter.drawRect(0, self.palette.getActive() * 16, 16 * 16, 16)
+        painter.drawRect(0, selection[0] * 16, 16 * 16, 16)
+        painter.drawRect(selection[1] * 16, selection[0] * 16, 16, 16)
         painter.end()
 
 class TileDataRenderer(qw.QWidget):
@@ -93,6 +107,7 @@ class TileDataRenderer(qw.QWidget):
     palette: Palette
     tileCache: TileImageCache
     image: qg.QImage
+    _selection = qc.QRect(-1, -1, -1, -1)
 
     def __init__(
         self,
@@ -109,6 +124,38 @@ class TileDataRenderer(qw.QWidget):
         self.palette = palette
         self.tileCache = tileCache
         tileCache.change.connect(self.update)
+        self.mousePressEvent = self._startClick
+        self.mouseMoveEvent = self._mouseMove
+        self.mouseReleaseEvent = self._endClick
+
+    def _startClick(self, event: qg.QMouseEvent) -> None:
+        """Called when the user clicks on the tile data"""
+        if event.button()!= qt.MouseButton.LeftButton: return
+        self._selection.setLeft(math.floor(event.position().x() / (TileData.TILE_SIZE * 2)))
+        self._selection.setTop(math.floor(event.position().y() / (TileData.TILE_SIZE * 2)))
+        self._selection.setRight(math.ceil(event.position().x() / (TileData.TILE_SIZE * 2)) - self._selection.x())
+        self._selection.setBottom(math.ceil(event.position().y() / (TileData.TILE_SIZE * 2)) - self._selection.y())
+        self.update()
+
+    def _mouseMove(self, event: qg.QMouseEvent) -> None:
+        """Called when the mouse moves over the tile data"""
+        self._selection.setRight(math.ceil(event.position().x() / (TileData.TILE_SIZE * 2)) - self._selection.x())
+        self._selection.setBottom(math.ceil(event.position().y() / (TileData.TILE_SIZE * 2)) - self._selection.y())
+        self.update()
+
+    def _endClick(self, event: qg.QMouseEvent) -> None:
+        """Called when the mouse button is released above the tile data"""
+        if event.button() != qt.MouseButton.LeftButton: return
+        if self._selection.left() >= 0 and self._selection.top() >= 0 and self._selection.right() > 0 and self._selection.bottom() > 0:
+            self.tileData.setSelection(self._selection)
+        self._selection.setCoords(-1, -1, -1, -1)
+        self.update()
+
+    def _clicked(self, event: qg.QMouseEvent) -> None:
+        if event.button() == qt.MouseButton.LeftButton:
+            row = math.floor(event.position().y() / 16)
+            col = math.floor(event.position().x() / 16)
+            self.palette.select(row, col)
 
     def paintEvent(self, event: qg.QPaintEvent) -> None:
         painter = qg.QPainter()
@@ -116,13 +163,29 @@ class TileDataRenderer(qw.QWidget):
         rect = qc.QRectF()
         for x in range(TileData.ROW_WIDTH):
             for y in range(self.tileData.getRows()):
-                rect.setCoords(
+                rect.setRect(
                     x * TileData.TILE_SIZE * 2,
                     y * TileData.TILE_SIZE * 2,
-                    (x + 1) * TileData.TILE_SIZE * 2,
-                    (y + 1) * TileData.TILE_SIZE * 2
+                    TileData.TILE_SIZE * 2,
+                    TileData.TILE_SIZE * 2
                 )
                 painter.drawImage(rect, self.tileCache.getImage(x, y))
+                if y == 0: print(x, y, self.tileCache.getImage(x, y))
+        if self._selection.right() >= 0 and self._selection.bottom() >= 0:
+            painter.drawRect(
+                self._selection.left() * TileData.TILE_SIZE * 2,
+                self._selection.top() * TileData.TILE_SIZE * 2,
+                self._selection.right() * TileData.TILE_SIZE * 2,
+                self._selection.bottom() * TileData.TILE_SIZE * 2
+            )
+        else:
+            selection = self.tileData.getSelection()
+            painter.drawRect(
+                selection.left() * TileData.TILE_SIZE * 2,
+                selection.top() * TileData.TILE_SIZE * 2,
+                selection.right() * TileData.TILE_SIZE * 2,
+                selection.bottom() * TileData.TILE_SIZE * 2
+            )
         painter.end()
 
 class TileEditor(qw.QWidget):
@@ -143,14 +206,34 @@ class TileEditor(qw.QWidget):
         self.palette = palette
         self.tileCache = tileCache
         tileCache.change.connect(self.update)
-        self.setMinimumSize(256, 256)
+        tileData.changeSelection.connect(self.update)
 
     def paintEvent(self, event: qg.QPaintEvent) -> None:
+        selection = self.tileData.getSelection()
         dimensions = self.geometry()
-        rect = fitInside(qc.QRectF(0, 0, TileData.TILE_SIZE, TileData.TILE_SIZE), dimensions)
+        dimensions = fitInside(qc.QRectF(
+            0,
+            0,
+            selection.right() * TileData.TILE_SIZE,
+            selection.bottom() * TileData.TILE_SIZE
+        ), dimensions)
+        width = dimensions.width() / selection.right()
+        height = dimensions.height() / selection.bottom()
+        rect = qc.QRectF(0, 0, 0, 0)
         painter = qg.QPainter()
         painter.begin(self)
-        painter.drawImage(rect, self.tileCache.getImage(0, 0))
+        for x in range(math.floor(selection.right())):
+            for y in range(math.floor(selection.bottom())):
+                rect.setRect(
+                    dimensions.x() + width * x,
+                    dimensions.y() + height * y,
+                    width,
+                    height
+                )
+                painter.drawImage(rect, self.tileCache.getImage(
+                    selection.x() + x,
+                    selection.y() + y
+                ))
         painter.end()
 
 class SuperSpiderWindow(qw.QMainWindow):
@@ -228,8 +311,12 @@ class TileView(qw.QFrame):
         pic = TileDataRenderer(tileData, palette, tileCache)
         button = qw.QPushButton("Aids aids aids")
         scroller.setWidget(pic)
-        scroller.setVerticalScrollBarPolicy(qt.ScrollBarPolicy.ScrollBarAlwaysOn)
-        scroller.setHorizontalScrollBarPolicy(qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroller.setVerticalScrollBarPolicy(
+            qt.ScrollBarPolicy.ScrollBarAlwaysOn
+        )
+        scroller.setHorizontalScrollBarPolicy(
+            qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         layout.addWidget(scroller)
         layout.addWidget(button)
         self.setLayout(layout)
@@ -247,7 +334,7 @@ class EditorView(qw.QFrame):
         super().__init__()
         layout = qw.QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
-        pic = TileEditor(tileData, palette, tileCache)
+        pic = TileEditor(palette, tileData, tileCache)
         tools = ToolView()
         layout.addWidget(tools)
         layout.addWidget(pic)
